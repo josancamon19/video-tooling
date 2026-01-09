@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -336,6 +337,39 @@ def build_audio_tempo_filter(speed: float) -> str:
     return ",".join(filters)
 
 
+def create_chapter_metadata(segments: list[Segment], tmpdir: Path) -> Path:
+    """Create ffmetadata file with chapter markers for each segment."""
+    metadata_file = tmpdir / "chapters.txt"
+
+    lines = [";FFMETADATA1"]
+
+    current_time_ms = 0
+    for i, seg in enumerate(segments):
+        output_duration_ms = int(seg.output_duration * 1000)
+
+        # Format speed for chapter title
+        speed = seg.speed
+        speed_str = f"{speed}x" if speed != int(speed) else f"{int(speed)}x"
+
+        # Original timestamps for reference
+        orig_start = format_timestamp(seg.start)
+        orig_end = format_timestamp(seg.end)
+
+        lines.append("")
+        lines.append("[CHAPTER]")
+        lines.append("TIMEBASE=1/1000")
+        lines.append(f"START={current_time_ms}")
+        lines.append(f"END={current_time_ms + output_duration_ms}")
+        lines.append(f"title={speed_str} (orig {orig_start}-{orig_end})")
+
+        current_time_ms += output_duration_ms
+
+    with open(metadata_file, "w") as f:
+        f.write("\n".join(lines))
+
+    return metadata_file
+
+
 def process_video_segments(
     input_path: Path,
     segments: list[Segment],
@@ -402,20 +436,42 @@ def process_video_segments(
                 for sf in segment_files:
                     f.write(f"file '{sf}'\n")
 
-            # Concat command
+            # First concat without chapters
+            temp_output = tmpdir_path / f"temp_concat{suffix}"
             concat_cmd = [
                 "ffmpeg", "-y",
                 "-f", "concat",
                 "-safe", "0",
                 "-i", str(concat_file),
                 "-c", "copy",
-                str(output_path)
+                str(temp_output)
             ]
 
             result = subprocess.run(concat_cmd, capture_output=True, text=True)
             if result.returncode != 0:
                 console.print(f"[red]Error concatenating: {result.stderr}[/red]")
                 sys.exit(1)
+
+            # Add chapter metadata
+            progress.update(main_task, description="Adding chapter metadata...")
+
+            metadata_file = create_chapter_metadata(all_segments, tmpdir_path)
+
+            # Mux with chapters
+            mux_cmd = [
+                "ffmpeg", "-y",
+                "-i", str(temp_output),
+                "-i", str(metadata_file),
+                "-map_metadata", "1",
+                "-codec", "copy",
+                str(output_path)
+            ]
+
+            result = subprocess.run(mux_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                # Fallback: just use the concat output without chapters
+                console.print(f"[yellow]Warning: Could not add chapters, using plain output[/yellow]")
+                shutil.move(str(temp_output), str(output_path))
 
     return output_path
 

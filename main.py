@@ -186,7 +186,31 @@ def display_segments(segments: list[Segment], video_duration: float) -> None:
     console.print()
 
 
-def get_segments_interactive(video_duration: float) -> list[Segment]:
+def preview_segment(video_path: Path, start: float, end: float) -> None:
+    """Extract a segment and open it in QuickTime for preview."""
+    preview_file = Path(tempfile.gettempdir()) / f"preview_{int(start)}_{int(end)}.mp4"
+
+    console.print(f"[cyan]Extracting preview ({format_timestamp(start)} - {format_timestamp(end)})...[/cyan]")
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", str(start),
+        "-t", str(end - start),
+        "-i", str(video_path),
+        "-c", "copy",
+        str(preview_file)
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        console.print(f"[red]Error extracting preview: {result.stderr}[/red]")
+        return
+
+    console.print(f"[green]Opening preview in QuickTime...[/green]")
+    subprocess.run(["open", "-a", "QuickTime Player", str(preview_file)])
+
+
+def get_segments_interactive(video_path: Path, video_duration: float) -> list[Segment]:
     """Interactively get segments from user."""
     segments: list[Segment] = []
 
@@ -206,11 +230,12 @@ def get_segments_interactive(video_duration: float) -> list[Segment]:
         console.print("  [cyan]a[/cyan] - Add segment")
         console.print("  [cyan]r[/cyan] - Remove segment")
         console.print("  [cyan]c[/cyan] - Clear all segments")
+        console.print("  [cyan]p[/cyan] - Preview a time range in QuickTime")
         console.print("  [cyan]q[/cyan] - Quick mode (entire video, one speed)")
         console.print("  [cyan]d[/cyan] - Done, process video")
         console.print()
 
-        choice = Prompt.ask("Choice", choices=["a", "r", "c", "q", "d"], default="a")
+        choice = Prompt.ask("Choice", choices=["a", "r", "c", "p", "q", "d"], default="a")
 
         if choice == "a":
             # Add segment
@@ -268,6 +293,31 @@ def get_segments_interactive(video_duration: float) -> list[Segment]:
             if segments and Confirm.ask("Clear all segments?", default=False):
                 segments.clear()
                 console.print("[yellow]All segments cleared[/yellow]")
+
+        elif choice == "p":
+            # Preview a time range
+            try:
+                start_str = Prompt.ask("Preview start time", default="0:00")
+                start = parse_timestamp(start_str)
+
+                if start < 0 or start >= video_duration:
+                    console.print(f"[red]Start must be between 0 and {format_timestamp(video_duration)}[/red]")
+                    continue
+
+                end_str = Prompt.ask("Preview end time", default=format_timestamp(min(start + 30, video_duration)))
+                end = parse_timestamp(end_str)
+
+                if end <= start:
+                    console.print("[red]End time must be after start time[/red]")
+                    continue
+
+                if end > video_duration:
+                    end = video_duration
+
+                preview_segment(video_path, start, end)
+
+            except ValueError as e:
+                console.print(f"[red]Invalid input: {e}[/red]")
 
         elif choice == "q":
             # Quick mode - entire video at one speed
@@ -569,7 +619,7 @@ def main():
     video_duration = display_video_info(video_path, info)
 
     # Get segments from user
-    segments = get_segments_interactive(video_duration)
+    segments = get_segments_interactive(video_path, video_duration)
 
     # Show final summary
     console.print()
